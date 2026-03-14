@@ -82,23 +82,24 @@ function exportPDF(flashcards) {
     }
 
     .page {
-      display: flex;
-      flex-wrap: wrap;
+      display: grid;
+      grid-template-columns: repeat(3, 63.5mm);
+      grid-template-rows: repeat(3, 88.9mm);
       gap: 5mm;
-      align-content: flex-start;
       page-break-after: always;
       position: relative;
-      width: 194mm;
+      width: 204mm;
     }
     .page:last-child { page-break-after: avoid; }
 
     .page-footer {
-      width: 100%;
+      grid-column: 1 / -1;
       text-align: center;
       font-size: 7pt;
       color: #b4aea6;
       letter-spacing: 0.06em;
-      margin-top: 4mm;
+      align-self: end;
+      padding-top: 2mm;
     }
 
     .card {
@@ -162,16 +163,16 @@ function exportPDF(flashcards) {
   `
 
   const perPage = 9
-  const cols    = 3  // 3 columns per row
-  const pages = []
+  const cols    = 3
+  const pages   = []
   for (let i = 0; i < flashcards.length; i += perPage) {
     pages.push(flashcards.slice(i, i + perPage))
   }
 
-  const renderCard = (card, side) => {
+  const renderCard = (card, side, gridColumn) => {
     const o = card.orientation || 'portrait'
     return `
-      <div class="card ${side} ${o}">
+      <div class="card ${side} ${o}" style="grid-column: ${gridColumn}">
         ${side === 'front'
           ? `<span class="card-title">${escapeHTML(card.title || '')}</span>`
           : `<p class="card-info">${escapeHTML(card.information || '')}</p>`
@@ -181,27 +182,19 @@ function exportPDF(flashcards) {
     `
   }
 
-  // Mirror each row left-to-right so backs align when paper is flipped on long edge.
-  // Front row:  [1, 2, 3]  →  Back row: [3, 2, 1]
-  // Front row:  [4, 5, 6]  →  Back row: [6, 5, 4]  etc.
-  const mirrorRow = (cards) => {
-    const mirrored = []
-    for (let r = 0; r < Math.ceil(cards.length / cols); r++) {
-      const row = cards.slice(r * cols, r * cols + cols)
-      // Pad short last row with nulls so column positions stay correct
-      while (row.length < cols) row.push(null)
-      mirrored.push(...[...row].reverse())
-    }
-    return mirrored
-  }
-
+  // For back pages mirror each card's column so it lands behind its front
+  // when the paper is flipped on the long edge.
+  // Front col (1-indexed): 1, 2, 3  →  Back col: 3, 2, 1
   const renderPage = (cards, side) => {
-    const displayCards = side === 'back' ? mirrorRow(cards) : cards
+    const cardItems = cards.map((card, i) => {
+      const frontCol = (i % cols) + 1                  // 1, 2, or 3
+      const backCol  = cols - (i % cols)               // 3, 2, or 1
+      const col      = side === 'back' ? backCol : frontCol
+      return renderCard(card, side, col)
+    })
     return `
       <div class="page">
-        ${displayCards.map(c =>
-          c ? renderCard(c, side) : '<div class="card empty"></div>'
-        ).join('')}
+        ${cardItems.join('')}
         <div class="page-footer">${side === 'front' ? 'Cut along dashed lines.' : 'Back side — cut along dashed lines.'}</div>
       </div>
     `
