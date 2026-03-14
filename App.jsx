@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react'
-import { jsPDF } from 'jspdf'
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -9,133 +8,171 @@ function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2)
 }
 
-// ─── PDF Export ───────────────────────────────────────────────────────────────
+// ─── Print Export ─────────────────────────────────────────────────────────────
+// Uses the browser's native print engine so ALL characters render correctly
+// regardless of language, accents, or special symbols.
 
 function exportPDF(flashcards) {
   if (!flashcards.length) return
 
-  const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' })
+  const perPage = 9  // 3 cols × 3 rows
 
-  // Dimensions
-  const cardW    = 63.5
-  const cardH    = 88.9
-  const gutter   = 5
-  const cols     = 3
-  const rows     = 3
-  const perPage  = cols * rows
-  const pageW    = 210
-  const pageH    = 297
-  const marginX  = (pageW - cols * cardW - (cols - 1) * gutter) / 2  // ~4.75mm
-  const marginY  = (pageH - rows * cardH - (rows - 1) * gutter) / 2  // ~10.15mm
+  const cardCSS = `
+    @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600&family=DM+Sans:opsz,wght@9..40,400;9..40,500&display=swap');
 
-  // Split into groups of 9
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    @page {
+      size: A4 portrait;
+      margin: 10mm 8mm;
+    }
+
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: #fff;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+
+    .page {
+      width: 194mm;
+      display: grid;
+      grid-template-columns: repeat(3, 63.5mm);
+      grid-template-rows: repeat(3, 88.9mm);
+      gap: 5mm;
+      page-break-after: always;
+      position: relative;
+    }
+
+    .page:last-child { page-break-after: avoid; }
+
+    .page-footer {
+      position: absolute;
+      bottom: -8mm;
+      left: 0; right: 0;
+      text-align: center;
+      font-size: 7pt;
+      color: #b4aea6;
+      letter-spacing: 0.06em;
+    }
+
+    .card {
+      width: 63.5mm;
+      height: 88.9mm;
+      background: #fff;
+      border: 1px dashed #c8c2ba;
+      border-radius: 1.5mm;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8mm 6mm;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 0.8mm;
+    }
+
+    .card.front::before { background: #1a1816; }
+    .card.back::before  { background: #c8c2ba; }
+
+    .card-side-label {
+      position: absolute;
+      bottom: 2mm; right: 3mm;
+      font-size: 5pt;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #c8c2ba;
+    }
+
+    .card-title {
+      font-family: 'Cormorant Garamond', Georgia, serif;
+      font-size: 14pt;
+      font-weight: 600;
+      text-align: center;
+      line-height: 1.35;
+      color: #1a1816;
+      word-break: break-word;
+    }
+
+    .card-info {
+      font-size: 7.5pt;
+      line-height: 1.7;
+      text-align: center;
+      color: #4a4540;
+      word-break: break-word;
+    }
+
+    /* Crop marks */
+    .card::after {
+      content: '';
+      position: absolute;
+      inset: -4mm;
+      pointer-events: none;
+    }
+  `
+
+  // Split into pages of 9
   const pages = []
   for (let i = 0; i < flashcards.length; i += perPage) {
     pages.push(flashcards.slice(i, i + perPage))
   }
 
-  const drawCard = (x, y, side, card) => {
-    // White card background
-    doc.setFillColor(255, 255, 255)
-    doc.roundedRect(x, y, cardW, cardH, 1.5, 1.5, 'F')
-
-    // Top accent line
-    if (side === 'front') {
-      doc.setFillColor(26, 24, 22)
-      doc.rect(x, y, cardW, 0.8, 'F')
-    } else {
-      doc.setFillColor(200, 194, 186)
-      doc.rect(x, y, cardW, 0.5, 'F')
-    }
-
-    // Dashed border (crop guide)
-    doc.setLineDashPattern([1.8, 1.8], 0)
-    doc.setDrawColor(180, 174, 166)
-    doc.setLineWidth(0.25)
-    doc.roundedRect(x, y, cardW, cardH, 1.5, 1.5, 'S')
-    doc.setLineDashPattern([], 0)
-
-    // Corner crop marks
-    const markLen = 3
-    doc.setDrawColor(140, 134, 126)
-    doc.setLineWidth(0.2)
-    // TL
-    doc.line(x - markLen, y, x - 0.5, y)
-    doc.line(x, y - markLen, x, y - 0.5)
-    // TR
-    doc.line(x + cardW + 0.5, y, x + cardW + markLen, y)
-    doc.line(x + cardW, y - markLen, x + cardW, y - 0.5)
-    // BL
-    doc.line(x - markLen, y + cardH, x - 0.5, y + cardH)
-    doc.line(x, y + cardH + 0.5, x, y + cardH + markLen)
-    // BR
-    doc.line(x + cardW + 0.5, y + cardH, x + cardW + markLen, y + cardH)
-    doc.line(x + cardW, y + cardH + 0.5, x + cardW, y + cardH + markLen)
-
-    // Side watermark
-    doc.setFont('helvetica', 'normal')
-    doc.setFontSize(4.5)
-    doc.setTextColor(200, 194, 186)
-    doc.text(side.toUpperCase(), x + cardW - 2, y + cardH - 2.5, { align: 'right' })
-
-    const contentX = x + cardW / 2
-    const pad = 8
-
-    if (side === 'front') {
-      doc.setFont('helvetica', 'bold')
-      doc.setFontSize(12)
-      doc.setTextColor(26, 24, 22)
-      const titleLines = doc.splitTextToSize(card.title || '', cardW - pad * 2)
-      const titleBlockH = titleLines.length * 5.5
-      const titleY = y + (cardH - titleBlockH) / 2 + 4
-      doc.text(titleLines, contentX, titleY, { align: 'center', lineHeightFactor: 1.3 })
-    } else {
-      const info = card.information || ''
-      if (info.trim()) {
-        doc.setFont('helvetica', 'normal')
-        doc.setFontSize(8)
-        doc.setTextColor(60, 55, 50)
-        const infoLines = doc.splitTextToSize(info, cardW - pad * 2)
-        const visible   = infoLines.slice(0, 14)
-        const blockH    = visible.length * 4
-        const startY    = y + (cardH - blockH) / 2 + 3
-        doc.text(visible, contentX, startY, { align: 'center', lineHeightFactor: 1.5 })
+  const renderCard = (card, side) => `
+    <div class="card ${side}">
+      ${side === 'front'
+        ? `<span class="card-title">${escapeHTML(card.title || '')}</span>`
+        : `<p class="card-info">${escapeHTML(card.information || '')}</p>`
       }
-    }
+      <span class="card-side-label">${side}</span>
+    </div>
+  `
+
+  const renderPage = (cards, side) => `
+    <div class="page">
+      ${cards.map(c => renderCard(c, side)).join('')}
+      <div class="page-footer">Cut along dashed lines.</div>
+    </div>
+  `
+
+  const html = `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8" />
+      <title>Flashcards</title>
+      <style>${cardCSS}</style>
+    </head>
+    <body>
+      ${pages.map(g => renderPage(g, 'front')).join('')}
+      ${pages.map(g => renderPage(g, 'back')).join('')}
+    </body>
+    </html>
+  `
+
+  const win = window.open('', '_blank')
+  win.document.write(html)
+  win.document.close()
+  // Wait for fonts to load then print
+  win.onload = () => {
+    setTimeout(() => {
+      win.focus()
+      win.print()
+    }, 600)
   }
+}
 
-  const drawPageFooter = () => {
-    doc.setFont('helvetica', 'normal')
-    doc.setFontSize(6)
-    doc.setTextColor(180, 174, 166)
-    doc.setLineDashPattern([], 0)
-    doc.text('Cut along dashed lines.', pageW / 2, pageH - 4, { align: 'center' })
-  }
-
-  const drawGrid = (pageCards, side) => {
-    pageCards.forEach((card, i) => {
-      const col = i % cols
-      const row = Math.floor(i / cols)
-      const x   = marginX + col * (cardW + gutter)
-      const y   = marginY + row * (cardH + gutter)
-      drawCard(x, y, side, card)
-    })
-    drawPageFooter()
-  }
-
-  // Front pages
-  pages.forEach((group, i) => {
-    if (i > 0) doc.addPage()
-    drawGrid(group, 'front')
-  })
-
-  // Back pages
-  pages.forEach((group) => {
-    doc.addPage()
-    drawGrid(group, 'back')
-  })
-
-  doc.save('flashcards.pdf')
+function escapeHTML(str) {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/\n/g, '<br/>')
 }
 
 // ─── Card Modal ───────────────────────────────────────────────────────────────
