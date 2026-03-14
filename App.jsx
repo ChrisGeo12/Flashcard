@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { createWorker } from 'tesseract.js'
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -12,6 +13,53 @@ const CARD = {
 
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2)
+}
+
+// ─── useFitText hook ──────────────────────────────────────────────────────────
+// Shrinks font size until the text fits inside its container, no clipping.
+
+function useFitText({ text, minSize = 7, maxSize = 16 }) {
+  const containerRef = useRef(null)
+  const [fontSize, setFontSize] = useState(maxSize)
+
+  const fit = useCallback(() => {
+    const el = containerRef.current
+    if (!el || !text?.trim()) {
+      setFontSize(maxSize)
+      return
+    }
+
+    let lo = minSize
+    let hi = maxSize
+    let best = minSize
+
+    // Binary search for largest font that still fits
+    while (lo <= hi) {
+      const mid = (lo + hi) / 2
+      el.style.fontSize = `${mid}px`
+      const overflowing =
+        el.scrollHeight > el.clientHeight + 1 ||
+        el.scrollWidth  > el.clientWidth  + 1
+      if (overflowing) {
+        hi = mid - 0.5
+      } else {
+        best = mid
+        lo = mid + 0.5
+      }
+    }
+
+    el.style.fontSize = ''
+    setFontSize(best)
+  }, [text, minSize, maxSize])
+
+  useEffect(() => {
+    fit()
+    const ro = new ResizeObserver(fit)
+    if (containerRef.current) ro.observe(containerRef.current)
+    return () => ro.disconnect()
+  }, [fit])
+
+  return { containerRef, fontSize }
 }
 
 // ─── Print Export ─────────────────────────────────────────────────────────────
@@ -67,6 +115,7 @@ function exportPDF(flashcards) {
 
     .card.portrait  { width: 63.5mm; height: 88.9mm; }
     .card.landscape { width: 88.9mm; height: 63.5mm; }
+    .card.empty     { border: none; background: transparent; }
 
     .card::before {
       content: '';
@@ -97,15 +146,23 @@ function exportPDF(flashcards) {
     }
 
     .card-info {
-      font-size: 7.5pt;
+      font-size: clamp(6pt, 2.2cqi, 8pt);
       line-height: 1.7;
       text-align: center;
       color: #4a4540;
       word-break: break-word;
+      white-space: pre-wrap;
+      overflow: hidden;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
   `
 
   const perPage = 9
+  const cols    = 3  // 3 columns per row
   const pages = []
   for (let i = 0; i < flashcards.length; i += perPage) {
     pages.push(flashcards.slice(i, i + perPage))
@@ -124,12 +181,31 @@ function exportPDF(flashcards) {
     `
   }
 
-  const renderPage = (cards, side) => `
-    <div class="page">
-      ${cards.map(c => renderCard(c, side)).join('')}
-      <div class="page-footer">Cut along dashed lines.</div>
-    </div>
-  `
+  // Mirror each row left-to-right so backs align when paper is flipped on long edge.
+  // Front row:  [1, 2, 3]  →  Back row: [3, 2, 1]
+  // Front row:  [4, 5, 6]  →  Back row: [6, 5, 4]  etc.
+  const mirrorRow = (cards) => {
+    const mirrored = []
+    for (let r = 0; r < Math.ceil(cards.length / cols); r++) {
+      const row = cards.slice(r * cols, r * cols + cols)
+      // Pad short last row with nulls so column positions stay correct
+      while (row.length < cols) row.push(null)
+      mirrored.push(...[...row].reverse())
+    }
+    return mirrored
+  }
+
+  const renderPage = (cards, side) => {
+    const displayCards = side === 'back' ? mirrorRow(cards) : cards
+    return `
+      <div class="page">
+        ${displayCards.map(c =>
+          c ? renderCard(c, side) : '<div class="card empty"></div>'
+        ).join('')}
+        <div class="page-footer">${side === 'front' ? 'Cut along dashed lines.' : 'Back side — cut along dashed lines.'}</div>
+      </div>
+    `
+  }
 
   const html = `
     <!DOCTYPE html>
@@ -169,6 +245,12 @@ function CardModal({ card, onSave, onClose }) {
   const [information, setInformation] = useState(card?.information || '')
   const [orientation, setOrientation] = useState(card?.orientation || 'portrait')
 
+  // OCR state
+  const [scanning,    setScanning]    = useState(false)
+  const [scanProgress, setScanProgress] = useState(0)
+  const [scanError,   setScanError]   = useState('')
+  const fileInputRef = useRef(null)
+
   useEffect(() => {
     const handler = (e) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', handler)
@@ -180,9 +262,45 @@ function CardModal({ card, onSave, onClose }) {
     onSave({ title: title.trim(), information: information.trim(), orientation })
   }
 
-  const dim = CARD[orientation]
+  const handleScanImage = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setScanError('')
+    setScanning(true)
+    setScanProgress(0)
 
-  // Scale down preview card so it always fits nicely in the modal
+    try {
+      const worker = await createWorker('eng', 1, {
+        logger: (m) => {
+          if (m.status === 'recognizing text') {
+            setScanProgress(Math.round(m.progress * 100))
+          }
+        },
+      })
+      const { data: { text } } = await worker.recognize(file)
+      await worker.terminate()
+
+      const cleaned = text
+        .replace(/\r\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim()
+
+      if (cleaned) {
+        setInformation((prev) => prev ? prev + '\n\n' + cleaned : cleaned)
+      } else {
+        setScanError('No text found. Try a clearer photo with good lighting.')
+      }
+    } catch {
+      setScanError('Scan failed. Please try again.')
+    } finally {
+      setScanning(false)
+      setScanProgress(0)
+      // Reset input so same file can be scanned again
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  const dim = CARD[orientation]
   const maxPreviewW = 260
   const scale = Math.min(1, maxPreviewW / dim.px_w)
   const previewW = Math.round(dim.px_w * scale)
@@ -268,28 +386,97 @@ function CardModal({ card, onSave, onClose }) {
             </>
           ) : (
             <>
-              <label className="field-label">Information</label>
+              {/* Back tab header row */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <label className="field-label" style={{ margin: 0 }}>Information</label>
+
+                {/* Hidden file input */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  style={{ display: 'none' }}
+                  onChange={handleScanImage}
+                />
+
+                {/* Scan button */}
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={scanning}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '6px',
+                    padding: '5px 12px',
+                    border: '1.5px solid var(--border-dark)',
+                    background: 'transparent',
+                    color: scanning ? 'var(--ink-light)' : 'var(--ink)',
+                    borderRadius: 'var(--radius)',
+                    cursor: scanning ? 'not-allowed' : 'pointer',
+                    fontSize: '0.73rem',
+                    fontFamily: 'DM Sans, sans-serif',
+                    fontWeight: 500,
+                    letterSpacing: '0.03em',
+                    transition: 'border-color 0.15s',
+                  }}
+                >
+                  {/* Camera icon */}
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                    <circle cx="12" cy="13" r="4"/>
+                  </svg>
+                  {scanning ? `Scanning… ${scanProgress}%` : 'Scan Text'}
+                </button>
+              </div>
+
+              {/* Scanning progress bar */}
+              {scanning && (
+                <div style={{
+                  height: '3px', background: 'var(--border)', borderRadius: '2px',
+                  marginBottom: '10px', overflow: 'hidden',
+                }}>
+                  <div style={{
+                    height: '100%', background: 'var(--ink)',
+                    width: `${scanProgress}%`,
+                    transition: 'width 0.3s ease',
+                    borderRadius: '2px',
+                  }} />
+                </div>
+              )}
+
+              {/* Error */}
+              {scanError && (
+                <p style={{
+                  fontSize: '0.72rem', color: '#B94040',
+                  marginBottom: '8px', lineHeight: '1.5',
+                  fontFamily: 'DM Sans, sans-serif',
+                }}>
+                  {scanError}
+                </p>
+              )}
+
               <textarea
                 className="text-area"
                 value={information}
                 onChange={(e) => setInformation(e.target.value)}
-                placeholder="Write the study content here…"
-                autoFocus
+                placeholder="Write the study content here, or tap Scan Text to read from a photo…"
+                autoFocus={!scanning}
               />
+
               <div className="preview-wrap">
                 <div className="preview-label">Preview — Back</div>
-                <div className="preview-card back" style={{ width: previewW, height: previewH }}>
-                  {information.trim()
-                    ? <p className="preview-info">{information}</p>
-                    : <span className="preview-placeholder">Information will appear here</span>
-                  }
-                </div>
+                <FitTextCard
+                  text={information}
+                  width={previewW}
+                  height={previewH}
+                  className="preview-card back"
+                  placeholder="Information will appear here"
+                />
               </div>
             </>
           )}
         </div>
 
-        <button className="save-btn" onClick={handleSave} disabled={!title.trim()}>
+        <button className="save-btn" onClick={handleSave} disabled={!title.trim() || scanning}>
           {card ? 'Update Card' : 'Save Card'}
         </button>
       </div>
@@ -299,9 +486,54 @@ function CardModal({ card, onSave, onClose }) {
 
 // ─── Flashcard Component ──────────────────────────────────────────────────────
 
+// ─── FitTextCard ─────────────────────────────────────────────────────────────
+// Renders text inside a card-sized box, auto-shrinking font until it fits.
+
+function FitTextCard({ text, width, height, className, placeholder }) {
+  const { containerRef, fontSize } = useFitText({ text, minSize: 7, maxSize: 15 })
+
+  return (
+    <div
+      className={className}
+      style={{ width, height }}
+    >
+      {text?.trim() ? (
+        <p
+          ref={containerRef}
+          style={{
+            fontSize: `${fontSize}px`,
+            lineHeight: 1.65,
+            textAlign: 'center',
+            color: 'var(--ink-mid)',
+            wordBreak: 'break-word',
+            whiteSpace: 'pre-wrap',
+            overflow: 'hidden',
+            width: '100%',
+            height: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          {text}
+        </p>
+      ) : (
+        <span className="preview-placeholder">{placeholder}</span>
+      )}
+    </div>
+  )
+}
+
+// ─── Flashcard Component ──────────────────────────────────────────────────────
+
 function FlashCard({ card, onEdit, onDelete }) {
   const [flipped, setFlipped] = useState(false)
   const dim = CARD[card.orientation || 'portrait']
+  const { containerRef, fontSize } = useFitText({
+    text: card.information,
+    minSize: 7,
+    maxSize: 15,
+  })
 
   return (
     <div className="card-wrapper">
@@ -320,12 +552,31 @@ function FlashCard({ card, onEdit, onDelete }) {
             <span className="card-flip-hint">tap to flip</span>
           </div>
           <div className="card-face card-back" data-side="back">
-            {card.information
-              ? <p className="card-info">{card.information}</p>
-              : <span style={{ fontSize: '0.75rem', color: 'var(--ink-light)', fontStyle: 'italic' }}>
-                  No information added.
-                </span>
-            }
+            {card.information?.trim() ? (
+              <p
+                ref={containerRef}
+                style={{
+                  fontSize: `${fontSize}px`,
+                  lineHeight: 1.65,
+                  textAlign: 'center',
+                  color: 'var(--ink-mid)',
+                  wordBreak: 'break-word',
+                  whiteSpace: 'pre-wrap',
+                  overflow: 'hidden',
+                  width: '100%',
+                  height: '100%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                {card.information}
+              </p>
+            ) : (
+              <span style={{ fontSize: '0.75rem', color: 'var(--ink-light)', fontStyle: 'italic' }}>
+                No information added.
+              </span>
+            )}
           </div>
         </div>
       </div>
