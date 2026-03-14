@@ -9,13 +9,14 @@ function uid() {
 }
 
 // ─── Print Export ─────────────────────────────────────────────────────────────
-// Uses the browser's native print engine so ALL characters render correctly
-// regardless of language, accents, or special symbols.
 
-function exportPDF(flashcards) {
+function exportPDF(flashcards, orientation = 'portrait') {
   if (!flashcards.length) return
 
-  const perPage = 9  // 3 cols × 3 rows
+  const isLandscape = orientation === 'landscape'
+  const cols    = isLandscape ? 4 : 3
+  const rows    = isLandscape ? 2 : 3
+  const perPage = cols * rows
 
   const cardCSS = `
     @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600&family=DM+Sans:opsz,wght@9..40,400;9..40,500&display=swap');
@@ -23,7 +24,7 @@ function exportPDF(flashcards) {
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     @page {
-      size: A4 portrait;
+      size: A4 ${orientation};
       margin: 10mm 8mm;
     }
 
@@ -35,13 +36,14 @@ function exportPDF(flashcards) {
     }
 
     .page {
-      width: 194mm;
       display: grid;
-      grid-template-columns: repeat(3, 63.5mm);
-      grid-template-rows: repeat(3, 88.9mm);
+      grid-template-columns: repeat(${cols}, 63.5mm);
+      grid-template-rows: repeat(${rows}, 88.9mm);
       gap: 5mm;
       page-break-after: always;
       position: relative;
+      width: fit-content;
+      margin: 0 auto;
     }
 
     .page:last-child { page-break-after: avoid; }
@@ -322,6 +324,119 @@ function FlashCard({ card, onEdit, onDelete }) {
   )
 }
 
+// ─── Print Options Modal ──────────────────────────────────────────────────────
+
+function PrintModal({ flashcards, onClose }) {
+  const [orientation, setOrientation] = useState('portrait')
+
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  const handlePrint = () => {
+    exportPDF(flashcards, orientation)
+    onClose()
+  }
+
+  const OrientOption = ({ value, label, caption, portrait }) => {
+    const active = orientation === value
+    return (
+      <button
+        onClick={() => setOrientation(value)}
+        style={{
+          flex: 1,
+          border: '2px solid ' + (active ? 'var(--ink)' : 'var(--border)'),
+          background: active ? 'var(--bg)' : 'transparent',
+          borderRadius: 'var(--radius)',
+          padding: '20px 12px',
+          cursor: 'pointer',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: '12px',
+          transition: 'border-color 0.15s, background 0.15s',
+        }}
+      >
+        <svg
+          width={portrait ? 40 : 56}
+          height={portrait ? 56 : 40}
+          viewBox={portrait ? '0 0 40 56' : '0 0 56 40'}
+          fill="none"
+        >
+          <rect x="1" y="1"
+            width={portrait ? 38 : 54}
+            height={portrait ? 54 : 38}
+            rx="2" fill="white"
+            stroke={active ? '#1a1816' : '#c8c2ba'}
+            strokeWidth="2"
+          />
+          {portrait ? (
+            <>
+              <rect x="6"  y="7"  width="12" height="10" rx="1" fill={active ? '#1a1816' : '#e2ded8'}/>
+              <rect x="22" y="7"  width="12" height="10" rx="1" fill={active ? '#1a1816' : '#e2ded8'}/>
+              <rect x="6"  y="22" width="12" height="10" rx="1" fill={active ? '#1a1816' : '#e2ded8'}/>
+              <rect x="22" y="22" width="12" height="10" rx="1" fill={active ? '#1a1816' : '#e2ded8'}/>
+              <rect x="6"  y="37" width="12" height="10" rx="1" fill={active ? '#1a1816' : '#e2ded8'}/>
+              <rect x="22" y="37" width="12" height="10" rx="1" fill={active ? '#1a1816' : '#e2ded8'}/>
+            </>
+          ) : (
+            <>
+              <rect x="5"  y="6"  width="9" height="12" rx="1" fill={active ? '#1a1816' : '#e2ded8'}/>
+              <rect x="17" y="6"  width="9" height="12" rx="1" fill={active ? '#1a1816' : '#e2ded8'}/>
+              <rect x="29" y="6"  width="9" height="12" rx="1" fill={active ? '#1a1816' : '#e2ded8'}/>
+              <rect x="41" y="6"  width="9" height="12" rx="1" fill={active ? '#1a1816' : '#e2ded8'}/>
+              <rect x="5"  y="22" width="9" height="12" rx="1" fill={active ? '#1a1816' : '#e2ded8'}/>
+              <rect x="17" y="22" width="9" height="12" rx="1" fill={active ? '#1a1816' : '#e2ded8'}/>
+              <rect x="29" y="22" width="9" height="12" rx="1" fill={active ? '#1a1816' : '#e2ded8'}/>
+              <rect x="41" y="22" width="9" height="12" rx="1" fill={active ? '#1a1816' : '#e2ded8'}/>
+            </>
+          )}
+        </svg>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: '0.82rem', fontWeight: 500, color: 'var(--ink)', fontFamily: 'DM Sans, sans-serif' }}>
+            {label}
+          </div>
+          <div style={{ fontSize: '0.7rem', color: 'var(--ink-light)', marginTop: '3px', fontFamily: 'DM Sans, sans-serif' }}>
+            {caption}
+          </div>
+        </div>
+      </button>
+    )
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>Print Options</h2>
+          <button className="close-btn" onClick={onClose}>×</button>
+        </div>
+        <div style={{ padding: '24px 28px 8px' }}>
+          <label className="field-label" style={{ marginBottom: '14px', display: 'block' }}>
+            Page Orientation
+          </label>
+          <div style={{ display: 'flex', gap: '12px' }}>
+            <OrientOption value="portrait"  label="Portrait"  caption="3 × 3 · 9 cards/page" portrait={true}  />
+            <OrientOption value="landscape" label="Landscape" caption="4 × 2 · 8 cards/page" portrait={false} />
+          </div>
+          <p style={{
+            fontSize: '0.72rem', color: 'var(--ink-light)',
+            marginTop: '14px', lineHeight: '1.6',
+            fontFamily: 'DM Sans, sans-serif'
+          }}>
+            Fronts print first, then backs — ready for double-sided printing and cutting.
+          </p>
+        </div>
+        <button className="save-btn" onClick={handlePrint}>
+          Open Print Dialog
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -335,6 +450,7 @@ export default function App() {
 
   // null = closed | 'create' | <card object> = editing
   const [modal, setModal] = useState(null)
+  const [showPrintModal, setShowPrintModal] = useState(false)
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(flashcards))
@@ -371,8 +487,8 @@ export default function App() {
             {flashcards.length > 0 && (
               <button
                 className="btn-outline"
-                onClick={() => exportPDF(flashcards)}
-                title="Export deck to printable A4 PDF"
+                onClick={() => setShowPrintModal(true)}
+                title="Export deck to printable PDF"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -425,12 +541,20 @@ export default function App() {
         )}
       </main>
 
-      {/* ── Modal ── */}
+      {/* ── Card Modal ── */}
       {modal && (
         <CardModal
           card={modal === 'create' ? null : modal}
           onSave={handleSave}
           onClose={() => setModal(null)}
+        />
+      )}
+
+      {/* ── Print Modal ── */}
+      {showPrintModal && (
+        <PrintModal
+          flashcards={flashcards}
+          onClose={() => setShowPrintModal(false)}
         />
       )}
     </div>
